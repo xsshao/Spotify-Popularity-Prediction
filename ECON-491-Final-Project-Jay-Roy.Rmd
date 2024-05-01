@@ -1,0 +1,323 @@
+---
+title: "Final Project - Statical Analysis on Spotify Popularity Score"
+author: "Shaoshao Xiong(sx24), Jay Chen(jc123)"
+date: "2024-04-28"
+output: pdf_document
+---
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+We wish to study what are the several most significant predictors of a track's popularity on Spotify, and how can we accurately predict these popularity scores based on track features and trends? This model could also help music companies to optimize their investment and focus on music style that is most likely to succeed so that they could maximize their revenue. Furthermore, this model would help the artists to realize which characteristics of their music is less popular, hence allow their future productions to better meet the market demand and achieve commercial success.
+
+We look at two different studies by other researchers on the similar topic. The first study is "SpotHitPy: A Study For ML-Based Song Hit Prediction Using Spotify" by Ioannis et al., which presents a comprehensive analysis of predicting song popularity using machine learning techniques. The study used a data set that contains approximately 18,000 Spotify songs where 861 of them were in the BillBoard Top 100 between 2011 and 2021. Dataset’s features includes id, artist, popularity, explicit, album type, danceability, emergy, key, loudness, mode speechiness, acousticness, instrumentalness, liveness, valence, tempo, duration_ms and time_signature. The researchers used multiple statistical learning methods and found out that Random Forest and Support Vector Machines were most effective, achieving an accuracy of approximately 86%. Random Forest achieved high precision on both the training and the test set, making it suitable for the Hit Song prediction problem, while Support Vector Machines had higher accuracy on the test set. This high level of predictive accuracy underscores the potential of machine learning in identifying future hits, providing valuable insights for artists and music producers about the traits that potentially lead to a song's commercial success.
+
+The second study is "Music Popularity: Metrics, Characteristics, and Audio-based Prediction" by Junghyuk Lee and Jong-Seok Lee, which explores different aspects of music popularity and its predictability through audio features. The study used a dataset of 16,686 songs ranked in the Billboard Hot 100 chart between 1970 and 2014. The authors defined multiple popularity metrics and analyzed them using real-world chart data, then automatically predicted them using acoustic features. They developed classification models to predict these metrics using features like MPEG-7 audio features, Mel-frequency cepstral coefficients (MFCCs), and music complexity features including Harmony, Rhythm and Timbre. The study summarizes that the maximum rank of a song was highly related to its debut performance. The study uses SVMs and concluded that Complexity was superior to MFCC and MPEG. The study highlights the partial success in predicting music popularity metric and stated that it is necessary to attempt to improve the prediction performance in the future. 
+
+Both studies use a dataset of approximately 17,000 songs to predict the popularity of them, which share similarity with this study. Both studies aim to find out the relationship between a song’s features and its market performance and both of them use SVM. The first study’s approach is closer to our study, as both share similar features as predictors.  
+
+For our study, we choose a dataset from kaggle.com with link can be found in the reference page. There are 18 variables in the dataset with  232,725 observations (or tracks). To clean the data, we first read from the csv file, filter out the NA, NAN, and INF values. We then remove the irrelevant predictors, including artist_name, track_id, track_name, genre, key, mode, and time_signature, as we believe they may not be statistically significant in our analysis. Then we change the value two predictors, instrumentalness and liveness, to be binary as suggested by the Spotify API documentation. Our first approach would be the simple linear regression. 
+</div>
+
+
+```{r}
+library(tidyverse)
+library(caret)
+
+
+raw_data <- read.csv("SpotifyFeatures.csv", header = TRUE, 
+                     sep = ",", quote = "\"", dec = ".")
+
+cleaned_data <- raw_data %>% distinct(track_id, .keep_all = TRUE) %>% 
+filter_all(all_vars(!is.na(.) & !is.nan(.) & !is.infinite(.))) %>% 
+select (-artist_name, -track_id, -track_name, -genre, -key, -mode, 
+        -time_signature) %>% 
+mutate(instrumentalness = if_else(instrumentalness > 0.5, 1, 0)) %>% 
+mutate(liveness = if_else(liveness > 0.8, 1, 0))
+
+filtered_data <- cleaned_data %>% 
+  filter(popularity >= 70)
+head(filtered_data)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+We create indices for the training set. Splitting 70 percent of the data as the training set and 30 percent of the data as the test set.
+</div>
+```{r}
+set.seed(123)
+
+# Create indices for the training set
+trainIndex <- createDataPartition(cleaned_data$popularity,
+                                  p = 0.7, list = FALSE, times = 1)
+train_data <- cleaned_data[trainIndex, ]
+test_data <- cleaned_data[-trainIndex, ]
+
+ols = lm(popularity ~ .,  data = train_data)
+summary(ols)
+```
+
+```{r}
+set.seed(123)
+predictions <- predict(ols, newdata=test_data)
+mse <- mean((predictions - test_data$popularity)^2)
+print(mse)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+From the summary we could see that every one of the coefficients in our Linear Regression model is statistically significant. Linear regression gives a MSE of 243.93 and a Adjusted R-squared of 0.1958, which implies that the model did not capture many factors that might influence the popularity score. Howeve, based on the statistics, we find all predictors except tempo to be significant because of the extremely small p-value. We now check if our select of predictors are reasonable by applying lasso regression.
+</div>
+```{r}
+library(glmnet)
+library(fastDummies)
+set.seed(123)
+
+lasso_data <- raw_data %>% distinct(track_id, .keep_all = TRUE) %>% 
+filter_all(all_vars(!is.na(.) & !is.nan(.) & !is.infinite(.))) %>% 
+select (-artist_name, -track_id, -track_name, -genre, -time_signature) %>% 
+mutate(liveness = if_else(liveness > 0.8, 1, 0),
+       instrumentalness = if_else(instrumentalness > 0.5, 1, 0),
+       mode_major = as.integer(mode == "Major"),
+       mode_minor = as.integer(mode == "Minor"),
+      )%>% 
+dummy_cols(select_columns = "key", remove_first_dummy = TRUE,
+ignore_na = TRUE) %>% select(-key, -mode) 
+                          
+# Create indices for the training set
+lasso_trainIndex <- createDataPartition (lasso_data$popularity, p = 0.7,
+                                         list = FALSE, times = 1)
+lasso_train_data <- lasso_data[lasso_trainIndex, ]
+lasso_test_data <- lasso_data[-lasso_trainIndex, ]                           
+                          
+
+X <- as.matrix(lasso_train_data
+               [, -which(names(lasso_train_data) == "popularity")]) 
+Y <- as.vector(lasso_train_data$popularity)
+
+
+lasso.model <- glmnet(X, Y, alpha=1)
+
+cv.lasso <- cv.glmnet(X, Y, alpha=1)
+# plot the cross validation result
+plot(cv.lasso) 
+best.lambda <- cv.lasso$lambda.min
+
+newX <- as.matrix(lasso_test_data
+                  [, -which(names(lasso_test_data) == "popularity")])
+newY <- as.vector(lasso_test_data$popularity)
+
+lasso.pred <- predict(lasso.model, s=best.lambda, newx=newX)
+
+lasso_mse <- mean((lasso.pred - newY)^2)
+print(lasso_mse)
+
+```
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+Comparing the lasso mse(242.502) with linear regression mse(243.93), we observer a difference of about 1.4. Given the minimal difference, we may deduce that either the variables dropped by the Lasso model were not significantly contributing to the prediction, or the dataset does not have issues with multicollinearity or overfitting that Lasso is specifically designed to handle. To confirm our assumption, we print the coefficients and plot the coefficient paths.
+</div>
+
+```{r}
+# Use the best lambda to extract coefficients
+lasso_coefficients <- coef(lasso.model, s = best.lambda)
+print(lasso_coefficients)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+The values of the coefficients suggests that features like danceability and loudness have positive effects on a track's popularity, whereas features such as acousticness, energy, speechiness, and valence typically reduce it. The effects of different musical keys on popularity also vary, with some keys associated with higher or lower popularity relative to the baseline.
+</div>
+
+```{r}
+# Plot the coefficient paths
+plot(lasso.model, xvar = "lambda", label = T)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+From the graph, we observe that at higher values of log(lambda), many coefficients are shrunk to zero, suggesting that the model is selecting a smaller subset of features. Also, a few paths remain non-zero across a wide range of lambda values before reaching zero, indicating that these features are influential across various degrees of regularization and may be strong predictors. Whereas the fact that some coefficient paths cross the zero line quite early as lambda increases suggests that these features are less important and are eliminated by the Lasso model early in the regularization process. To sum up, we may conclude that our choice of variables for the linear regression is very reasonable and appropriate, with all variables being significant as shown by the graphs and coefficient values.
+
+We move on to Random Forest. We consider Random Forest because it can provide insights into which features are most important in predicting track popularity, which aligns with our goal to understand what features influence popularity. Random Forest also could handle a mix of binary, categorical, and numerical features well. 
+</div>
+```{r}
+library(randomForest)
+set.seed(123)
+rf_model <- randomForest(popularity ~ ., data = train_data,
+                         ntree = 100, mtry = 3)
+# Print summary of the model
+print(summary(rf_model))
+
+# Predicting on test data
+predictions <- predict(rf_model, newdata = test_data)
+
+# Calculate Mean Squared Error
+mse <- mean((predictions - test_data$popularity)^2)
+print(paste("Mean Squared Error:", mse))
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+As we can see from the result, MSE becomes 151.5233, which is lower than both the Linear Regression model and the lasso, showing that Random Forest is the best model in evaluating popularity score. 
+
+In the next section of our analysis, instead of predicting the numerical value of our popularity score, we want to classify songs as “hits” and “non-hits” songs based on their popularity score. We have decided that a song could be counted as hits if their popularity score is in the 99th percentile of the whole population, which is greater than 70 in this case. We split the dataset into “hits”(1) and “non-hits”(0) and perform logistic regression. Before doing the logistic regression, we mandatorily balance the dataset because the initial data’s non-hits significantly outnumber hits. Then we employed logistic regression and trained the model on the balanced dataset and evaluated it against a test set from the original data.
+</div>
+
+```{r}
+library(caret)
+library(dplyr)
+set.seed(123)
+cleaned_data <- cleaned_data %>%
+  mutate(hit = ifelse(popularity > 70, 1, 0))
+# Split the data into training and test sets
+splitIndex <- createDataPartition(cleaned_data$hit, p = 0.7, list = FALSE)
+train_data <- cleaned_data[splitIndex, ]
+test_data <- cleaned_data[-splitIndex, ]
+
+# Balance the training dataset
+hits <- train_data %>% filter(hit == 1)
+non_hits <- train_data %>% filter(hit == 0)
+test_data$hit <- factor(test_data$hit, levels = c(0, 1))
+# Downsample to ensure a balance dataset
+non_hits_downsampled <- non_hits %>%
+  sample_n(nrow(hits))
+
+balanced_train_data <- bind_rows(hits, non_hits_downsampled)
+
+# Fit logistic regression model on the balanced data
+logit_model_balanced <- glm(as.factor(hit) ~ . - popularity,
+                            data = balanced_train_data, family = 'binomial')
+
+# Calculate test predictions and error rate
+test_predictions_prob_balanced <- predict (logit_model_balanced,
+                                           newdata = test_data, 
+                                           type = "response")
+test_predictions_balanced <- ifelse(test_predictions_prob_balanced > 0.5, 1, 0)
+test_error_rate_balanced <- mean(test_predictions_balanced != test_data$hit)
+test_accuracy_balanced <- 1 - test_error_rate_balanced
+
+# Print results
+print(paste("Test Error Rate (Balanced):", test_error_rate_balanced))
+print(paste("Test Accuracy (Balanced):", test_accuracy_balanced))
+
+# Create a confusion matrix for the balanced model and print it
+confusionMatrix_balanced <- confusionMatrix(
+  as.factor(test_predictions_balanced), as.factor(test_data$hit))
+print(confusionMatrix_balanced)
+balanced_hit_counts <- table(balanced_train_data$hit)
+print(balanced_hit_counts)
+
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+We eventually received a test error rate of 0.366. While logistic regression provides a baseline model for predicting song popularity as hits or non-hits, the results suggest that a more complex model might be required to enhance predictive accuracy.
+</div>
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+We then extended our analysis to Support Vector Machine(SVM), which is a more complicated classification technique that could potentially handle non-linear relationships with kernels. We trained the SVM model on the balanced dataset and evaluated the model with the original, unbalanced test dataset.
+</div>
+```{r}
+library(e1071)
+
+cleaned_data <- cleaned_data %>%
+  mutate(hit = ifelse(popularity > 70, 1, 0))
+
+# Fit SVM model on the balanced data
+svm_model <- svm(as.factor(hit) ~ . - popularity, data = balanced_train_data,
+                 method = 'C-classification', kernel = 'radial')
+
+# Predict on test data
+test_predictions <- predict(svm_model, 
+                    newdata = test_data[-which(names(test_data) == "hit")])
+
+# Calculate test predictions and error rate
+test_error_rate <- mean(as.numeric(test_predictions) - 1 != test_data$hit)
+test_accuracy <- 1 - test_error_rate
+
+# Print results
+print(paste("Test Error Rate:", test_error_rate))
+print(paste("Test Accuracy:", test_accuracy))
+
+# Create a confusion matrix for the SVM model and print it
+confusionMatrix <- confusionMatrix(as.factor(test_predictions),
+                                   as.factor(test_data$hit))
+print(confusionMatrix)
+```
+
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+The result gives us a test error rate of 0.375, which is slightly higher than the logistic regression model. 
+
+We now will consider a versatile method, K-Nearest Neighbors. To choose the best k value, we use define a range of k to try and use 10-fold cross-validation to avoid overfitting.
+</div>
+
+```{r}
+library(caret)
+library(class)
+control <- trainControl(method = "cv", number = 10)
+
+k_values <- data.frame(k = c(1, 5, 10, 20, 50, 100))
+
+balanced_train_data$hit <- factor(balanced_train_data$hit, levels = c(0, 1))
+
+# Train the model
+knn <- train(hit ~ ., data = balanced_train_data, method = "knn",
+                 tuneGrid = k_values, trControl = control)
+
+#Print the results
+print(knn)
+summary(knn)
+
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+From the result, we can see that at k=1, the highest accuracy is reported at approximately 64.93%. This suggests moderate effectiveness of the model. Here, k=1 may be slightly overfitting as it captures too much noise or outliers in the data, yet it still provides the best accuracy among the tested k values. As k increases, the training error rate generally decreases, indicating that including more neighbors dilutes the prediction quality for our dataset.
+</div>
+```{r}
+# Make prediction on new data
+knn_predictions <- predict(knn, newdata = test_data)
+
+# Create a confusion matrix for the balanced model and print it
+knn_confusion_matrix <- confusionMatrix(as.factor(knn_predictions),
+                                        as.factor(test_data$hit))
+print(knn_confusion_matrix)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+Based on confusion matrix of the actual test, we have a accuracy of 62.36%, or test error rate of 37.64%. If we look at the predictive values, the high value of 0.99022 indicates that when the model predicts class 0, it is correct about 99.02% of the time. However, the negative predictive values are very low at 0.03332, suggesting that when the model predicts class 1, it is correct only about 3.33% of the time. Overall, the kNN model shows limited effectiveness, with modest accuracy and a strong bias towards predicting the majority class. Its predictive performance for class 1 is notably poor, as indicated by the very low negative predictive value.
+
+Finally, we employed the Random Forest as a more complicated classification technique to predict the song as hits versus not-hits. Random Forest is a robust ensemble learning method known for its high accuracy and ability to handle overfitting through constructing a multitude of decision trees at training time. We trained the Random Forest model on the balanced dataset and evaluated the model with the original, unbalanced test dataset. The model was configured with 500 trees and considered three variables at each split. The result gives us a test error rate of 0.355, which is the best among three classification models and indicates the effectiveness of Random Forest in this application.
+</div>
+``` {r}
+library(randomForest)
+# fit Random Forest model on the balanced data
+rf_model <- randomForest(as.factor(hit) ~ . - popularity,
+                         data = balanced_train_data, ntree = 500, mtry = 3)
+test_predictions <- predict(rf_model, newdata = test_data)
+
+# calculate test predictions and error rate
+test_error_rate <- mean(as.numeric(test_predictions) - 1 != test_data$hit)
+test_accuracy <- 1 - test_error_rate
+
+# print results
+print(paste("Random Forest Test Error Rate:", test_error_rate))
+print(paste("Random Forest Test Accuracy:", test_accuracy))
+confusionMatrix <- confusionMatrix(as.factor(test_predictions),
+                                   as.factor(test_data$hit))
+print(confusionMatrix)
+
+feature_importance <- importance(rf_model)
+print(feature_importance)
+
+```
+```{r}
+# Plotting feature importance for better visualization
+varImpPlot(rf_model)
+```
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+Based on the result of the feature importance scorse of the random forest model, features such as loudness, acousticness, and danceability emerged as the most critical, with high importance scores. These features are followed by energy, speechiness, and others that also contribute notably but to a lesser extent. Conversely, liveness and instrumentalness displayed minimal impact, suggesting their limited role in the model's predictive accuracy. 
+
+Overall, the study demonstrates the application of machine learning techniques in predicting the popularity of songs on Spotify. Among the models tested, the Random Forest classifier is the most effective in both regression and classification testing, achieving the lowest error rate and the highest accuracy. This suggests that for complex predictive problems like song popularity, Random Forest is valuable because the relationships between predictors and outcomes are not straightforward, and the model is very good at explaining non-linear data and avoiding overfitting. And from the results of random forest, we may conclude that loudness, acousticness, danceability, energy, speechiness, duration_ms, tempo, valence are the most signifanct predictors in our analysis. This project not only highlights the potential of advanced statistical techniques in the entertainment industry but also show one of the most effective strategies of prediction. 
+</div>
+
+<div style="margin: 20px; border: 2px solid #3C7FAE; padding: 20px; background-color: #f0f0f0;">
+Reference Page:
+Dimolitsas, Ioannis, et al. (PDF) Spothitpy: A Study for ML-Based Song Hit Prediction Using Spotify, School of Electrical and Computer Engineering, National Technical University of Athens, Athens, Greece, www.researchgate.net/publication/367280936_SpotHitPy_A_Study_For_ML-Based_Song_Hit_Prediction_Using_Spotify. Accessed 29 Apr. 2024. 
+
+Lee, Junghyuk, and Jong-Seok Lee. Music Popularity: Metrics, Characteristics, and Audio-Based Prediction, 2018, arxiv.org/pdf/1812.00551.pdf.
+
+Link to dataset: https://www.kaggle.com/datasets/zaheenhamidani/ultimate-spotify-tracks-db
+</div>
